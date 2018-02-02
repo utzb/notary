@@ -1,8 +1,8 @@
-// +build pkcs11,linux
+// +build pkcs11, linux
 
 package yubikey
 
-var possiblePkcs11Libs = []string{
+var possiblepkcs11libs = []string{
 	"/usr/lib/libykcs11.so",
 	"/usr/lib64/libykcs11.so",
 	"/usr/lib/x86_64-linux-gnu/libykcs11.so",
