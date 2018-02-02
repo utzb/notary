@@ -19,6 +19,8 @@ type HardwareStore struct {
 	LibLoader     Pkcs11LibLoader
 }
 
+// NewHardwareStore returns a Store, given a backup key store to write any
+// generated keys to (usually a KeyFileStore)
 func NewHardwareStore(backupStore trustmanager.KeyStore, passphraseRetriever notary.PassRetriever) (
 	*HardwareStore, error) {
 
@@ -32,6 +34,7 @@ func NewHardwareStore(backupStore trustmanager.KeyStore, passphraseRetriever not
 	return s, nil
 }
 
+// Name returns a user friendly name for the location this store
 func (s HardwareStore) Name() string {
 	return hardwareName
 }
@@ -40,6 +43,7 @@ func (s *HardwareStore) SetLibLoader(loader Pkcs11LibLoader) {
 	s.LibLoader = loader
 }
 
+// ListKeys returns a list of keys in the hardwarestore
 func (s *HardwareStore) ListKeys() map[string]trustmanager.KeyInfo {
 	if len(s.Keys) > 0 {
 		return BuildKeyMap(s.Keys)
@@ -61,26 +65,12 @@ func (s *HardwareStore) ListKeys() map[string]trustmanager.KeyInfo {
 	return BuildKeyMap(keys)
 }
 
+// AddKey puts a key inside the Hardwarestore, as well as writing it to the backup store
 func (s *HardwareStore) AddKey(keyInfo trustmanager.KeyInfo, privKey data.PrivateKey) error {
-	/*var (
-		chosenPassphrase string
-		giveup           bool
-		err              error
-	)
-	for attempts := 0; ; attempts++ {
-		chosenPassphrase, giveup, err = s.passRetriever(privKey.ID(), keyInfo.Role.String(), true, attempts)
-		if err == nil {
-			break
-		}
-		if giveup || attempts > 10 {
-			return errors.New("blalba")
-		}
-	}*/
-	added, err := s.addKey(privKey.ID(), keyInfo.Role, privKey) // here first var was added
+	added, err := s.addKey(privKey.ID(), keyInfo.Role, privKey)
 	if err != nil {
 		return err
 	}
-
 	if added && s.BackupStore != nil {
 
 		err = s.BackupStore.AddKey(keyInfo, privKey)
@@ -92,6 +82,8 @@ func (s *HardwareStore) AddKey(keyInfo trustmanager.KeyInfo, privKey data.Privat
 	return nil
 }
 
+// Only add if we haven't seen the key already.  Return whether the key was
+// added.
 func (s *HardwareStore) addKey(keyID string, role data.RoleName, privKey data.PrivateKey) (
 	bool, error) {
 
@@ -134,6 +126,8 @@ func (s *HardwareStore) addKey(keyID string, role data.RoleName, privKey data.Pr
 	return false, err
 }
 
+// GetKey retrieves a key from the Hardwarestore only (it does not look inside the
+// backup store)
 func (s *HardwareStore) GetKey(keyID string) (data.PrivateKey, data.RoleName, error) {
 	ctx, session, err := hardwareKeyStore.SetupHSMEnv(s.LibLoader)
 	if err != nil {
@@ -166,6 +160,8 @@ func (s *HardwareStore) GetKey(keyID string) (data.PrivateKey, data.RoleName, er
 	return privKey, alias, err
 }
 
+// RemoveKey deletes a key from the Hardwarestore only (it does not remove it from the
+// backup store)
 func (s *HardwareStore) RemoveKey(keyID string) error {
 	ctx, session, err := hardwareKeyStore.SetupHSMEnv(s.LibLoader)
 	if err != nil {
@@ -189,6 +185,7 @@ func (s *HardwareStore) RemoveKey(keyID string) error {
 	return err
 }
 
+// GetKeyInfo is not yet implemented
 func (s *HardwareStore) GetKeyInfo(keyID string) (trustmanager.KeyInfo, error) {
 	return trustmanager.KeyInfo{}, fmt.Errorf("Not yet implemented")
 }

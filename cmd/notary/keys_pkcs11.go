@@ -13,12 +13,12 @@ import (
 func init() {
 	pkcs11.Setup()
 }
+
 func getHardwareStore(fileKeyStore trustmanager.KeyStore, ret notary.PassRetriever) (*universal.HardwareStore, error) {
 	return universal.NewHardwareStore(fileKeyStore, ret)
 }
 
 func getImporters(baseDir string, ret notary.PassRetriever) ([]trustmanager.Importer, error) {
-
 	var importers []trustmanager.Importer
 	if universal.IsAccessible() {
 		yubiStore, err := getHardwareStore(nil, ret)

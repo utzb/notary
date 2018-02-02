@@ -1,6 +1,6 @@
 // +build pkcs11
 
-package yubikey
+package opencryptoki
 
 import (
 	"crypto/ecdsa"
@@ -10,8 +10,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"math/big"
+	"io"
 	"os"
+	"strconv"
+	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/miekg/pkcs11"
@@ -22,66 +25,19 @@ import (
 	"github.com/theupdateframework/notary/tuf/utils"
 )
 
-const (
-	name = "yubikey"
-	// UserPin is the user pin of a yubikey (in PIV parlance, is the PIN)
-	UserPin = "123456"
-	// SOUserPin is the "Security Officer" user pin - this is the PIV management
-	// (MGM) key, which is different than the admin pin of the Yubikey PGP interface
-	// (which in PIV parlance is the PUK, and defaults to 12345678)
-	SOUserPin = "010203040506070801020304050607080102030405060708"
-	numSlots  = 4 // number of slots in the yubikey
-
-	// KeymodeNone means that no touch or PIN is required to sign with the yubikey
-	KeymodeNone = 0
-	// KeymodeTouch means that only touch is required to sign with the yubikey
-	KeymodeTouch = 1
-	// KeymodePinOnce means that the pin entry is required once the first time to sign with the yubikey
-	KeymodePinOnce = 2
-	// KeymodePinAlways means that pin entry is required every time to sign with the yubikey
-	KeymodePinAlways = 4
-)
-
-// what key mode to use when generating keys
 var (
-	yubikeyKeymode = KeymodeTouch | KeymodePinOnce
-	// order in which to prefer token locations on the yubikey.
-	// corresponds to: 9c, 9e, 9d, 9a
-	slotIDs = []int{2, 1, 3, 0}
+	tokenSlot uint
+	pkcs11Lib string
 )
 
-// SetYubikeyKeyMode - sets the mode when generating yubikey keys.
-// This is to be used for testing.  It does nothing if not building with tag
-// pkcs11.
-func SetYubikeyKeyMode(keyMode int) error {
-	// technically 7 (1 | 2 | 4) is valid, but KeymodePinOnce +
-	// KeymdoePinAlways don't really make sense together
-	if keyMode < 0 || keyMode > 5 {
-		return errors.New("Invalid key mode")
-	}
-	yubikeyKeymode = keyMode
-	return nil
-}
-
-// SetTouchToSignUI - allows configurable UX for notifying a user that they
-// need to touch the yubikey to sign. The callback may be used to provide a
-// mechanism for updating a GUI (such as removing a modal) after the touch
-// has been made
-func SetTouchToSignUI(notifier func(), callback func()) {
-	touchToSignUI = notifier
-	if callback != nil {
-		touchDoneCallback = callback
-	}
-}
-
-var touchToSignUI = func() {
-	fmt.Println("Please touch the attached Yubikey to perform signing.")
-}
-
-var touchDoneCallback = func() {
-	// noop
-}
-var pkcs11Lib string
+const (
+	UserPin       = ""
+	name          = "openCryptoki"
+	SOPin         = "87654321"
+	numSlots      = 999
+	ock_req_major = 3
+	ock_req_minor = 8
+)
 
 type keyStore struct {
 }
@@ -100,12 +56,12 @@ func NewKeyStore() *keyStore {
 	}
 	return &keyStore{}
 }
-
 func (ks *keyStore) Name() string {
 	return name
 }
-
-// addECDSAKey adds a key to the yubikey
+func SetSlot(slot uint) {
+	tokenSlot = slot
+}
 func (ks *keyStore) AddECDSAKey(
 	ctx universal.IPKCS11Ctx,
 	session pkcs11.SessionHandle,
@@ -114,15 +70,13 @@ func (ks *keyStore) AddECDSAKey(
 	passRetriever notary.PassRetriever,
 	role data.RoleName,
 ) error {
-	logrus.Debugf("Attempting to add key to yubikey with ID: %s", privKey.ID())
-
-	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_SO, SOUserPin, name)
+	logrus.Debugf("Attempting to add key to %s with ID: %s", name, privKey.ID())
+	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_SO, SOPin, fmt.Sprintf("%s SOPin", name))
 	if err != nil {
 		return err
 	}
 	defer ctx.Logout(session)
 
-	// Create an ecdsa.PrivateKey out of the private key bytes
 	ecdsaPrivKey, err := x509.ParseECPrivateKey(privKey.Private())
 	if err != nil {
 		return err
@@ -130,7 +84,6 @@ func (ks *keyStore) AddECDSAKey(
 
 	ecdsaPrivKeyD := universal.EnsurePrivateKeySize(ecdsaPrivKey.D.Bytes())
 
-	// Hard-coded policy: the generated certificate expires in 10 years.
 	startTime := time.Now()
 	template, err := utils.NewCertificate(role.String(), startTime, startTime.AddDate(10, 0, 0))
 	if err != nil {
@@ -141,20 +94,24 @@ func (ks *keyStore) AddECDSAKey(
 	if err != nil {
 		return fmt.Errorf("failed to create the certificate: %v", err)
 	}
-
 	certTemplate := []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_LABEL, "Notary Certificate"),
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_CERTIFICATE),
+		pkcs11.NewAttribute(pkcs11.CKA_CERTIFICATE_TYPE, pkcs11.CKC_X_509),
+		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_VALUE, certBytes),
+		pkcs11.NewAttribute(pkcs11.CKA_SUBJECT, template.SubjectKeyId),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, pkcs11KeyID),
 	}
 
 	privateKeyTemplate := []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_LABEL, "Notary Private Key"),
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
 		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_ECDSA),
+		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, pkcs11KeyID),
 		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, []byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07}),
 		pkcs11.NewAttribute(pkcs11.CKA_VALUE, ecdsaPrivKeyD),
-		pkcs11.NewAttribute(pkcs11.CKA_VENDOR_DEFINED, yubikeyKeymode),
 	}
 
 	_, err = ctx.CreateObject(session, certTemplate)
@@ -171,16 +128,15 @@ func (ks *keyStore) AddECDSAKey(
 }
 
 func (ks *keyStore) GetECDSAKey(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, pkcs11KeyID []byte) (*data.ECDSAPublicKey, data.RoleName, error) {
+
 	findTemplate := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_CERTIFICATE),
+		pkcs11.NewAttribute(pkcs11.CKA_CERTIFICATE_TYPE, pkcs11.CKC_X_509),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, pkcs11KeyID),
-		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
 	}
-
-	attrTemplate := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, []byte{0}),
-		pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, []byte{0}),
-		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, []byte{0}),
+	pubTemplate := []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_VALUE, []byte{0}),
 	}
 
 	if err := ctx.FindObjectsInit(session, findTemplate); err != nil {
@@ -197,27 +153,21 @@ func (ks *keyStore) GetECDSAKey(ctx universal.IPKCS11Ctx, session pkcs11.Session
 		return nil, "", err
 	}
 	if len(obj) != 1 {
-		logrus.Debugf("should have found one object")
-		return nil, "", errors.New("no matching keys found inside of yubikey")
+		return nil, "", errors.New(fmt.Sprintf("no matching keys found inside of %s", name))
 	}
-
-	// Retrieve the public-key material to be able to create a new ECSAKey
-	attr, err := ctx.GetAttributeValue(session, obj[0], attrTemplate)
+	val, err := ctx.GetAttributeValue(session, obj[0], pubTemplate)
 	if err != nil {
-		logrus.Debugf("Failed to get Attribute for: %v", obj[0])
+		logrus.Debugf("Failed to get Certificate for: %v", obj[0])
 		return nil, "", err
 	}
-
-	// Iterate through all the attributes of this key and saves CKA_PUBLIC_EXPONENT and CKA_MODULUS. Removes ordering specific issues.
-	var rawPubKey []byte
-	for _, a := range attr {
-		if a.Type == pkcs11.CKA_EC_POINT {
-			rawPubKey = a.Value
-		}
-
+	cert, err := x509.ParseCertificate(val[0].Value)
+	pub := cert.PublicKey
+	if err != nil {
+		logrus.Debugf("Failed to parse Certificate for: %v", obj[0])
+		return nil, "", err
 	}
-
-	ecdsaPubKey := ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(rawPubKey[3:35]), Y: new(big.Int).SetBytes(rawPubKey[35:])}
+	attr := pub.(*ecdsa.PublicKey)
+	ecdsaPubKey := ecdsa.PublicKey{Curve: elliptic.P256(), X: attr.X, Y: attr.Y}
 	pubBytes, err := x509.MarshalPKIXPublicKey(&ecdsaPubKey)
 	if err != nil {
 		logrus.Debugf("Failed to Marshal public key")
@@ -227,27 +177,24 @@ func (ks *keyStore) GetECDSAKey(ctx universal.IPKCS11Ctx, session pkcs11.Session
 	return data.NewECDSAPublicKey(pubBytes), data.CanonicalRootRole, nil
 }
 
-// sign returns a signature for a given signature request
 func (ks *keyStore) Sign(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, pkcs11KeyID []byte, passRetriever notary.PassRetriever, payload []byte) ([]byte, error) {
-	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_USER, UserPin, name)
+	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_USER, UserPin, fmt.Sprintf("%s UserPin", name))
 	if err != nil {
 		return nil, fmt.Errorf("error logging in: %v", err)
 	}
 	defer ctx.Logout(session)
 
-	// Define the ECDSA Private key template
-	class := pkcs11.CKO_PRIVATE_KEY
 	privateKeyTemplate := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_CLASS, class),
+		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
 		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_ECDSA),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, pkcs11KeyID),
 	}
-
 	if err := ctx.FindObjectsInit(session, privateKeyTemplate); err != nil {
 		logrus.Debugf("Failed to init find objects: %s", err.Error())
 		return nil, err
 	}
 	obj, _, err := ctx.FindObjects(session, 1)
+
 	if err != nil {
 		logrus.Debugf("Failed to find objects: %v", err)
 		return nil, err
@@ -267,14 +214,7 @@ func (ks *keyStore) Sign(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle,
 		return nil, err
 	}
 
-	// Get the SHA256 of the payload
 	digest := sha256.Sum256(payload)
-
-	if (yubikeyKeymode & KeymodeTouch) > 0 {
-		touchToSignUI()
-		defer touchDoneCallback()
-	}
-	// a call to Sign, whether or not Sign fails, will clear the SignInit
 	sig, err = ctx.Sign(session, digest[:])
 	if err != nil {
 		logrus.Debugf("Error while signing: %s", err)
@@ -288,43 +228,51 @@ func (ks *keyStore) Sign(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle,
 }
 
 func (ks *keyStore) HardwareRemoveKey(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, pkcs11KeyID []byte, passRetriever notary.PassRetriever, keyID string) error {
-	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_SO, SOUserPin, name)
+	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_SO, SOPin, fmt.Sprintf("%s SOPin", name))
 	if err != nil {
 		return err
 	}
 	defer ctx.Logout(session)
 
-	template := []*pkcs11.Attribute{
+	certTemplate := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, pkcs11KeyID),
-		//pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_CERTIFICATE),
 	}
 
-	if err := ctx.FindObjectsInit(session, template); err != nil {
-		logrus.Debugf("Failed to init find objects: %s", err.Error())
-		return err
+	keyTemplate := []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_ECDSA),
+		pkcs11.NewAttribute(pkcs11.CKA_ID, pkcs11KeyID),
+		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
 	}
-	obj, b, err := ctx.FindObjects(session, 1)
-	if err != nil {
-		logrus.Debugf("Failed to find objects: %s %v", err.Error(), b)
-		return err
-	}
-	if err := ctx.FindObjectsFinal(session); err != nil {
-		logrus.Debugf("Failed to finalize find objects: %s", err.Error())
-		return err
-	}
-	if len(obj) != 1 {
-		logrus.Debugf("should have found exactly one object")
-		return err
+	templates := [][]*pkcs11.Attribute{certTemplate, keyTemplate}
+	for _, template := range templates {
+		if err := ctx.FindObjectsInit(session, template); err != nil {
+			logrus.Debugf("Failed to init find objects: %s", err.Error())
+			return err
+		}
+		obj, b, err := ctx.FindObjects(session, 1)
+		if err != nil {
+			logrus.Debugf("Failed to find objects: %s %v", err.Error(), b)
+			return err
+		}
+		if err := ctx.FindObjectsFinal(session); err != nil {
+			logrus.Debugf("Failed to finalize find objects: %s", err.Error())
+			return err
+		}
+		if len(obj) != 1 {
+			logrus.Debugf("should have found exactly one object")
+			return err
+		}
+
+		err = ctx.DestroyObject(session, obj[0])
+		if err != nil {
+			logrus.Debugf("Failed to delete cert/privkey")
+			return err
+		}
+
 	}
 
-	// Delete the certificate
-	err = ctx.DestroyObject(session, obj[0])
-	if err != nil {
-		logrus.Debugf("Failed to delete cert")
-		return err
-	}
 	return nil
 }
 
@@ -342,7 +290,7 @@ func (ks *keyStore) HardwareListKeys(ctx universal.IPKCS11Ctx, session pkcs11.Se
 	}
 
 	if len(objs) == 0 {
-		return nil, errors.New("no keys found in yubikey")
+		return nil, errors.New(fmt.Sprintf("no keys found in %s", name))
 	}
 	logrus.Debugf("Found %d objects matching list filters", len(objs))
 	for _, obj := range objs {
@@ -350,14 +298,12 @@ func (ks *keyStore) HardwareListKeys(ctx universal.IPKCS11Ctx, session pkcs11.Se
 			cert *x509.Certificate
 			slot []byte
 		)
-		// Retrieve the public-key material to be able to create a new ECDSA
 		attr, err := ctx.GetAttributeValue(session, obj, attrTemplate)
 		if err != nil {
 			logrus.Debugf("Failed to get Attribute for: %v", obj)
 			continue
 		}
 
-		// Iterate through all the attributes of this key and saves CKA_PUBLIC_EXPONENT and CKA_MODULUS. Removes ordering specific issues.
 		for _, a := range attr {
 			if a.Type == pkcs11.CKA_ID {
 				slot = a.Value
@@ -373,7 +319,6 @@ func (ks *keyStore) HardwareListKeys(ctx universal.IPKCS11Ctx, session pkcs11.Se
 			}
 		}
 
-		// we found nothing
 		if cert == nil {
 			continue
 		}
@@ -405,13 +350,13 @@ func (ks *keyStore) listObjects(ctx universal.IPKCS11Ctx, session pkcs11.Session
 	findTemplate := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_CERTIFICATE),
+		pkcs11.NewAttribute(pkcs11.CKA_CERTIFICATE_TYPE, pkcs11.CKC_X_509),
 	}
 
 	if err := ctx.FindObjectsInit(session, findTemplate); err != nil {
 		logrus.Debugf("Failed to init: %s", err.Error())
 		return nil, err
 	}
-
 	objs, b, err := ctx.FindObjects(session, numSlots)
 	for err == nil {
 		var o []pkcs11.ObjectHandle
@@ -450,8 +395,6 @@ func (ks *keyStore) GetNextEmptySlot(ctx universal.IPKCS11Ctx, session pkcs11.Se
 		return nil, err
 	}
 	objs, b, err := ctx.FindObjects(session, numSlots)
-	// if there are more objects than `numSlots`, get all of them until
-	// there are no more to get
 	for err == nil {
 		var o []pkcs11.ObjectHandle
 		o, b, err = ctx.FindObjects(session, numSlots)
@@ -473,44 +416,34 @@ func (ks *keyStore) GetNextEmptySlot(ctx universal.IPKCS11Ctx, session pkcs11.Se
 		return nil, err
 	}
 	for _, obj := range objs {
-		// Retrieve the slot ID
 		attr, err := ctx.GetAttributeValue(session, obj, attrTemplate)
 		if err != nil {
 			continue
 		}
 
-		// Iterate through attributes. If an ID attr was found, mark it as taken
 		for _, a := range attr {
 			if a.Type == pkcs11.CKA_ID {
 				if len(a.Value) < 1 {
 					continue
 				}
-				// a byte will always be capable of representing all slot IDs
-				// for the Yubikeys
 				slotNum := int(a.Value[0])
 				if slotNum >= numSlots {
-					// defensive
 					continue
 				}
 				taken[slotNum] = true
 			}
 		}
 	}
-	// iterate the token locations in our preferred order and use the first
-	// available one. Otherwise exit the loop and return an error.
-	for _, loc := range slotIDs {
+	for loc := 0; loc < numSlots; loc++ {
 		if !taken[loc] {
 			return []byte{byte(loc)}, nil
 		}
 	}
-	return nil, errors.New("yubikey has no available slots")
+	return nil, errors.New("Crypto Express has no available slots")
 }
-
-// SetupHSMEnv is a method that depends on the existences
 
 func (ks *keyStore) SetupHSMEnv(libLoader universal.Pkcs11LibLoader) (
 	universal.IPKCS11Ctx, pkcs11.SessionHandle, error) {
-
 	if pkcs11Lib == "" {
 		return nil, 0, universal.ErrHSMNotPresent{Err: "no library found"}
 	}
@@ -524,23 +457,45 @@ func (ks *keyStore) SetupHSMEnv(libLoader universal.Pkcs11LibLoader) (
 		defer universal.FinalizeAndDestroy(p)
 		return nil, 0, fmt.Errorf("found library %s, but initialize error %s", pkcs11Lib, err.Error())
 	}
-
+	info, _ := p.GetInfo()
+	if (info.LibraryVersion.Major >= ock_req_major && info.LibraryVersion.Minor >= ock_req_minor) == false {
+		defer universal.FinalizeAndDestroy(p)
+		return nil, 0, fmt.Errorf("found library %s, but OpenCryptoki Version to low (3.8 Required)", pkcs11Lib)
+	}
 	slots, err := p.GetSlotList(true)
 	if err != nil {
 		defer universal.FinalizeAndDestroy(p)
 		return nil, 0, fmt.Errorf(
 			"loaded library %s, but failed to list HSM slots %s", pkcs11Lib, err)
 	}
-	// Check to see if we got any slots from the HSM.
 	if len(slots) < 1 {
 		defer universal.FinalizeAndDestroy(p)
 		return nil, 0, fmt.Errorf(
 			"loaded library %s, but no HSM slots found", pkcs11Lib)
 	}
+	if len(slots) == 1 {
+		tokenSlot = slots[0]
+	}
+	err = hasECDSAMechanism(p, slots)
+	if err != nil {
+		defer universal.FinalizeAndDestroy(p)
+		return nil, 0, fmt.Errorf("found library %s, but %s", pkcs11Lib, err)
+	}
+	if tokenSlot == 0 {
+		var text string
+		prettyPrintTokens(slots, os.Stdout, p)
+		fmt.Printf("Enter %s Token Slot to use: ", name)
+		fmt.Scanln(&text)
+		parsedInt, _ := strconv.Atoi(text)
+		tokenSlot = uint(parsedInt)
 
-	// CKF_SERIAL_SESSION: TRUE if cryptographic functions are performed in serial with the application; FALSE if the functions may be performed in parallel with the application.
-	// CKF_RW_SESSION: TRUE if the session is read/write; FALSE if the session is read-only
-	session, err := p.OpenSession(slots[0], pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
+	}
+
+	if tokenSlot != 0 && !contains(tokenSlot, slots) {
+		defer universal.FinalizeAndDestroy(p)
+		return nil, 0, fmt.Errorf("Slot %d not Available. Available Slots: %d", tokenSlot, slots)
+	}
+	session, err := p.OpenSession(tokenSlot, pkcs11.CKF_RW_SESSION)
 	if err != nil {
 		defer universal.Cleanup(p, session)
 		return nil, 0, fmt.Errorf(
@@ -550,4 +505,55 @@ func (ks *keyStore) SetupHSMEnv(libLoader universal.Pkcs11LibLoader) (
 
 	logrus.Debugf("Initialized PKCS11 library %s and started HSM session", pkcs11Lib)
 	return p, session, nil
+}
+
+func contains(element uint, array []uint) bool {
+	for i := 0; i < len(array); i++ {
+		if element == array[i] {
+			return true
+		}
+	}
+	return false
+}
+func hasECDSAMechanism(p universal.IPKCS11Ctx, slots []uint) error {
+	for _, slot := range slots {
+		mechanisms, _ := p.GetMechanismList(slot)
+		for _, mechanism := range mechanisms {
+			if mechanism.Mechanism == pkcs11.CKM_ECDSA {
+				return nil
+			}
+		}
+	}
+	return errors.New("available Tokens do not support ECDSA Mechanism")
+}
+
+func prettyPrintTokens(slots []uint, writer io.Writer, p universal.IPKCS11Ctx) {
+	fmt.Println("Available Tokens:")
+	tw := initTabWriter([]string{"SLOT", "MODEL", "LABEL", "FLAGS"}, writer)
+
+	for _, slot := range slots {
+		info, _ := p.GetTokenInfo(uint(slot))
+		fmt.Fprintf(
+			tw,
+			"%d\t%s\t%s\t%d\n",
+			slot,
+			info.Model,
+			info.Label,
+			info.Flags,
+		)
+	}
+	tw.Flush()
+}
+func initTabWriter(columns []string, writer io.Writer) *tabwriter.Writer {
+	tw := tabwriter.NewWriter(writer, 4, 4, 4, ' ', 0)
+	fmt.Fprintln(tw, strings.Join(columns, "\t"))
+	breakLine := make([]string, 0, len(columns))
+	for _, h := range columns {
+		breakLine = append(
+			breakLine,
+			strings.Repeat("-", len(h)),
+		)
+	}
+	fmt.Fprintln(tw, strings.Join(breakLine, "\t"))
+	return tw
 }

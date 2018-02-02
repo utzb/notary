@@ -68,6 +68,9 @@ type HardwareSlot struct {
 	SlotID []byte
 }
 
+// An error indicating that the HSM is not present (as opposed to failing),
+// i.e. that we can confidently claim that the key is not stored in the HSM
+// without notifying the user about a missing or failing HSM.
 type ErrHSMNotPresent struct {
 	Err string
 }
@@ -87,6 +90,8 @@ type HardwareSpecificStore interface {
 	SetupHSMEnv(Pkcs11LibLoader) (IPKCS11Ctx, pkcs11.SessionHandle, error)
 }
 
+// ErrBackupFailed is returned when a YubiStore fails to back up a key that
+// is added
 type ErrBackupFailed struct {
 	err string
 }
@@ -95,6 +100,7 @@ func (err ErrBackupFailed) Error() string {
 	return fmt.Sprintf("Failed to backup private key to: %s", err.err)
 }
 
+// IsAccessible returns true if a Hardwarestore can be accessed
 func IsAccessible() bool {
 	ctx, session, err := hardwareKeyStore.SetupHSMEnv(DefaultLoader)
 	if err != nil {
@@ -160,6 +166,9 @@ func BuildKeyMap(keys map[string]HardwareSlot) map[string]trustmanager.KeyInfo {
 	return res
 }
 
+// If a byte array is less than the number of bytes specified by
+// ecdsaPrivateKeySize, left-zero-pad the byte array until
+// it is the required size.
 func EnsurePrivateKeySize(payload []byte) []byte {
 	final := payload
 	if len(payload) < ecdsaPrivateKeySize {

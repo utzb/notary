@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/theupdateframework/notary"
 	"github.com/theupdateframework/notary/passphrase"
+	"github.com/theupdateframework/notary/trustmanager/pkcs11/opencryptoki"
 	"github.com/theupdateframework/notary/trustmanager/pkcs11/universal"
 	"github.com/theupdateframework/notary/trustmanager/pkcs11/yubikey"
 	"github.com/theupdateframework/notary/tuf/data"
@@ -18,7 +19,7 @@ var _retriever notary.PassRetriever
 
 func init() {
 	yubikey.SetYubikeyKeyMode(yubikey.KeymodeNone)
-
+	opencryptoki.SetSlot(3)
 	regRetriver := passphrase.PromptRetriever()
 	_retriever := func(k, a string, c bool, n int) (string, bool, error) {
 		if k == "Yubikey" {

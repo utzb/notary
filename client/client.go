@@ -103,6 +103,7 @@ import (
 	"github.com/theupdateframework/notary/client/changelist"
 	"github.com/theupdateframework/notary/cryptoservice"
 	store "github.com/theupdateframework/notary/storage"
+	"github.com/theupdateframework/notary/trustmanager/pkcs11"
 	"github.com/theupdateframework/notary/trustpinning"
 	"github.com/theupdateframework/notary/tuf"
 	"github.com/theupdateframework/notary/tuf/data"
@@ -153,7 +154,7 @@ func NewFileCachedRepository(baseDir string, gun data.GUN, baseURL string, rt ht
 	if err != nil {
 		return nil, err
 	}
-
+	pkcs11.Setup()
 	keyStores, err := getKeyStores(baseDir, retriever)
 	if err != nil {
 		return nil, err

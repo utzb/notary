@@ -2,7 +2,7 @@
 
 package yubikey
 
-var possiblepkcs11libs = []string{
+var possiblePkcs11Libs = []string{
 	"/usr/lib/libykcs11.so",
 	"/usr/lib64/libykcs11.so",
 	"/usr/lib/x86_64-linux-gnu/libykcs11.so",

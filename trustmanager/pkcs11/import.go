@@ -8,6 +8,7 @@ import (
 
 	"github.com/theupdateframework/notary"
 	"github.com/theupdateframework/notary/trustmanager"
+	"github.com/theupdateframework/notary/trustmanager/pkcs11/opencryptoki"
 	"github.com/theupdateframework/notary/trustmanager/pkcs11/universal"
 	"github.com/theupdateframework/notary/trustmanager/pkcs11/yubikey"
 	"github.com/theupdateframework/notary/tuf/data"
@@ -16,11 +17,23 @@ import (
 
 var hardwareKeyStore universal.HardwareSpecificStore
 
+// Setup defines which hardwarestore is available and prefers yubikey over opencryptoki.
+// If none is found, opencryptoki is set, as one has to be set.
 func Setup() {
+	if hardwareKeyStore != nil {
+		return
+	}
 	hardwareKeyStore = yubikey.NewKeyStore()
+	ctx, session, err := hardwareKeyStore.SetupHSMEnv(universal.DefaultLoader)
+	if err == nil {
+		universal.SetKeyStore(hardwareKeyStore)
+		defer universal.Cleanup(ctx, session)
+		return
+	}
+
+	hardwareKeyStore = opencryptoki.NewKeyStore()
 	universal.SetKeyStore(hardwareKeyStore)
 	return
-
 }
 
 // HardwareImport is a wrapper around the HardwareStore that allows us to import private
