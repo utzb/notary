@@ -62,14 +62,9 @@ func (ks *keyStore) Name() string {
 func SetSlot(slot uint) {
 	tokenSlot = slot
 }
-func (ks *keyStore) AddECDSAKey(
-	ctx universal.IPKCS11Ctx,
-	session pkcs11.SessionHandle,
-	privKey data.PrivateKey,
-	pkcs11KeyID []byte,
-	passRetriever notary.PassRetriever,
-	role data.RoleName,
-) error {
+
+// AddECDSAKey adds a key to the opencryptoki store
+func (ks *keyStore) AddECDSAKey(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, privKey data.PrivateKey, pkcs11KeyID []byte, passRetriever notary.PassRetriever, role data.RoleName) error {
 	logrus.Debugf("Attempting to add key to %s with ID: %s", name, privKey.ID())
 	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_SO, SOPin, fmt.Sprintf("%s SOPin", name))
 	if err != nil {
@@ -127,6 +122,7 @@ func (ks *keyStore) AddECDSAKey(
 	return nil
 }
 
+//GetECDSAKey gets a key by id from the opencryptoki store
 func (ks *keyStore) GetECDSAKey(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, pkcs11KeyID []byte) (*data.ECDSAPublicKey, data.RoleName, error) {
 
 	findTemplate := []*pkcs11.Attribute{
@@ -177,6 +173,7 @@ func (ks *keyStore) GetECDSAKey(ctx universal.IPKCS11Ctx, session pkcs11.Session
 	return data.NewECDSAPublicKey(pubBytes), data.CanonicalRootRole, nil
 }
 
+// Sign signs the payload with the key of the given ID
 func (ks *keyStore) Sign(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, pkcs11KeyID []byte, passRetriever notary.PassRetriever, payload []byte) ([]byte, error) {
 	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_USER, UserPin, fmt.Sprintf("%s UserPin", name))
 	if err != nil {
@@ -227,6 +224,7 @@ func (ks *keyStore) Sign(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle,
 	return sig[:], nil
 }
 
+// HardwareRemoveKey removes the Key with a specified ID from the opencryptoki store
 func (ks *keyStore) HardwareRemoveKey(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle, pkcs11KeyID []byte, passRetriever notary.PassRetriever, keyID string) error {
 	err := universal.Login(ctx, session, passRetriever, pkcs11.CKU_SO, SOPin, fmt.Sprintf("%s SOPin", name))
 	if err != nil {
@@ -276,6 +274,7 @@ func (ks *keyStore) HardwareRemoveKey(ctx universal.IPKCS11Ctx, session pkcs11.S
 	return nil
 }
 
+//HardwareListKeys lists all available Keys stored by opencryptoki
 func (ks *keyStore) HardwareListKeys(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle) (keys map[string]universal.HardwareSlot, err error) {
 	keys = make(map[string]universal.HardwareSlot)
 
@@ -382,6 +381,7 @@ func (ks *keyStore) listObjects(ctx universal.IPKCS11Ctx, session pkcs11.Session
 	return objs, nil
 }
 
+//GetNextEmptySlot returns the first empty slot found by opencryptoki to store a key
 func (ks *keyStore) GetNextEmptySlot(ctx universal.IPKCS11Ctx, session pkcs11.SessionHandle) ([]byte, error) {
 	findTemplate := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
@@ -442,8 +442,8 @@ func (ks *keyStore) GetNextEmptySlot(ctx universal.IPKCS11Ctx, session pkcs11.Se
 	return nil, errors.New("Crypto Express has no available slots")
 }
 
-func (ks *keyStore) SetupHSMEnv(libLoader universal.Pkcs11LibLoader) (
-	universal.IPKCS11Ctx, pkcs11.SessionHandle, error) {
+//SetupHSMEnv is responsible for opening the HSM session and performing some checks before (lib available, right version, mechanism available, etc)
+func (ks *keyStore) SetupHSMEnv(libLoader universal.Pkcs11LibLoader) (universal.IPKCS11Ctx, pkcs11.SessionHandle, error) {
 	if pkcs11Lib == "" {
 		return nil, 0, universal.ErrHSMNotPresent{Err: "no library found"}
 	}

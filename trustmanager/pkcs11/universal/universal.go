@@ -110,6 +110,7 @@ func IsAccessible() bool {
 	return true
 }
 
+// Login is responsible for getting a working login on attached hardwarekeystore
 func Login(ctx IPKCS11Ctx, session pkcs11.SessionHandle, passRetriever notary.PassRetriever, userFlag uint, defaultPassw string, hardwareName string) error {
 	err := ctx.Login(session, userFlag, defaultPassw)
 	if err == nil {
@@ -142,6 +143,7 @@ func Login(ctx IPKCS11Ctx, session pkcs11.SessionHandle, passRetriever notary.Pa
 	}
 }
 
+//Cleanup is responsible for cleaning up the pkcs11 session on the hardware
 func Cleanup(ctx IPKCS11Ctx, session pkcs11.SessionHandle) {
 	err := ctx.CloseSession(session)
 	if err != nil {
@@ -150,6 +152,7 @@ func Cleanup(ctx IPKCS11Ctx, session pkcs11.SessionHandle) {
 	FinalizeAndDestroy(ctx)
 }
 
+//FinalizeAndDestroy is responsible for finalizing the session on the hardware
 func FinalizeAndDestroy(ctx IPKCS11Ctx) {
 	err := ctx.Finalize()
 	if err != nil {

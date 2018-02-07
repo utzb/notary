@@ -1,3 +1,5 @@
+// +build !pkcs11
+
 // go list ./... and go test ./... will not pick up this package without this
 // file, because go ? ./... does not honor build tags.
 
@@ -7,3 +9,8 @@
 // See https://github.com/golang/go/issues/11246
 
 package pkcs11
+
+// Setup for client.go to work without pkcs11 buildtag
+func Setup() {
+	return
+}
